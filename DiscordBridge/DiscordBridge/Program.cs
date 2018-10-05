@@ -12,7 +12,7 @@ namespace DiscordBridge
 {
     class Program
     {
-        private DiscordSocketClient _client;
+        private DiscordSocketClient _discobot;
         private DiscordWebhookClient _webhook;
 
         static Dictionary<string, string> Config = new Dictionary<string, string>();
@@ -32,11 +32,59 @@ namespace DiscordBridge
 
         public async Task MainAsync()
         {
-            string WebHookURI = @"";
-            _webhook = new DiscordWebhookClient(, WebHookURI);
+            bool ErrorCondition = false;
+            if (
+                Config.TryGetValue("WebHookToken",out string WebHookToken)
+                && 
+                Config.TryGetValue("WebHookID", out string WebHookID)
+            )
+            {
+                try
+                {
+                    _webhook = new DiscordWebhookClient(Convert.ToUInt64(WebHookID), WebHookToken);
+                }
+                catch
+                {
+                    ErrorCondition = true;
+                }
+            }
+            else
+            {
+                ErrorCondition = true;
+            }
+            
+            if (ErrorCondition)
+            {
+                Console.WriteLine("Failure extracting WebHook token or id");
+                Environment.Exit(1);
+            }
 
             _webhook.Log += LogAsync;
             
+            // Webhook configuration done, lets do the main bot
+
+            if (Config.TryGetValue("DiscordToken", out string DiscordToken))
+            {
+                _discobot = new DiscordSocketClient();
+                _discobot.Log += LogAsync;
+                _discobot.Ready += ReadyAsync;
+                _discobot.MessageReceived += MessageReceivedAsync;
+
+                // Tokens should be considered secret data, and never hard-coded.
+                await _discobot.LoginAsync(TokenType.Bot, DiscordToken);
+            }
+            else
+            {
+                Console.WriteLine("Failure extracting or registering with Bot Token");
+                Environment.Exit(1);
+            }
+
+            // Both API's registered lets proceed.
+            await _discobot.StartAsync();
+
+            // Block the program until it is closed.
+            await Task.Delay(-1);
+
             /*
             await _webhook.SendMessageAsync(
                 "Test webhook message",
@@ -45,18 +93,6 @@ namespace DiscordBridge
                 @"TestUsername"
             );
             */
-
-            _client = new DiscordSocketClient();
-            _client.Log += LogAsync;
-            _client.Ready += ReadyAsync;
-            _client.MessageReceived += MessageReceivedAsync;
-
-            // Tokens should be considered secret data, and never hard-coded.
-            await _client.LoginAsync(TokenType.Bot, @"");
-            await _client.StartAsync();
-
-            // Block the program until it is closed.
-            await Task.Delay(-1);
         }
 
         private Task LogAsync(LogMessage log)
@@ -69,7 +105,7 @@ namespace DiscordBridge
         // connection and it is now safe to access the cache.
         private Task ReadyAsync()
         {
-            Console.WriteLine($"{_client.CurrentUser} is connected!");
+            Console.WriteLine($"{_discobot.CurrentUser} is connected!");
 
             return Task.CompletedTask;
         }
@@ -81,7 +117,7 @@ namespace DiscordBridge
             Console.WriteLine(message.Content);
 
             // The bot should never respond to itself.
-            if (message.Author.Id == _client.CurrentUser.Id)
+            if (message.Author.Id == _discobot.CurrentUser.Id)
                 return;
 
             if (message.Content == "!ping")

@@ -328,6 +328,4 @@ ASALocalRun/
 
 # MFractors (Xamarin productivity tool) working folder 
 .mfractor/
-
-# Application specific config
-*/App.config
+/DiscordBridge/DiscordBridge/Private.config
