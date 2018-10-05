@@ -3,7 +3,7 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio 15
 VisualStudioVersion = 15.0.27703.2018
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DiscordBridge", "DiscordBridge\DiscordBridge.csproj", "{5AB76F09-8E03-4FD5-B260-1A49C3ABAB6D}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DiscordBridge", "DiscordBridge\DiscordBridge.csproj", "{7C80D5C2-9A2A-43AB-BAF9-0442BCC4201A}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -11,15 +11,15 @@ Global
 		Release|Any CPU = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
-		{5AB76F09-8E03-4FD5-B260-1A49C3ABAB6D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{5AB76F09-8E03-4FD5-B260-1A49C3ABAB6D}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{5AB76F09-8E03-4FD5-B260-1A49C3ABAB6D}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{5AB76F09-8E03-4FD5-B260-1A49C3ABAB6D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7C80D5C2-9A2A-43AB-BAF9-0442BCC4201A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7C80D5C2-9A2A-43AB-BAF9-0442BCC4201A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7C80D5C2-9A2A-43AB-BAF9-0442BCC4201A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7C80D5C2-9A2A-43AB-BAF9-0442BCC4201A}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
-		SolutionGuid = {0D18E57E-4F28-4197-BEC6-58F21346A76C}
+		SolutionGuid = {7BA7A449-B082-47A1-9798-537F84C391CC}
 	EndGlobalSection
 EndGlobal
