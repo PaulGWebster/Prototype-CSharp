@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Threading.Tasks;
+
 using Discord;
 using Discord.Webhook;
 using Discord.WebSocket;
@@ -9,6 +10,8 @@ using System.Collections.Specialized;
 using System.Collections.Generic;
 using System.Threading;
 using System.Collections.Concurrent;
+using System.Net.Sockets;
+using System.IO;
 
 namespace DiscordBridge
 {
@@ -43,7 +46,7 @@ namespace DiscordBridge
             }
 
             // Start a control thread for handling the IRC side of things
-            IRCMaster = new Thread(new ThreadStart(IRCMasterWheel));
+            IRCMaster = new Thread(new ThreadStart(Governor));
             IRCMaster.Start();
 
             // Start the discord ASYNC shit fest.
@@ -53,14 +56,25 @@ namespace DiscordBridge
         /// <summary>
         ///  IRC Controller
         /// </summary>
-
-        private static void IRCMasterWheel()
-        {
+        /*
             while (true)
             {
                 DataPacket DBlock = BufferFromDiscord.Take();
-                BufferToDiscord.Add(DBlock);
+                //BufferToDiscord.Add(DBlock);
                 Console.WriteLine("Message: {0}", DBlock.Message);
+            }
+        */
+
+        private static void Governor()
+        {
+            TcpClient IRCConnection = new TcpClient();
+            IRCConnection.Connect(@"irc.0x00sec.org", 6667);
+            NetworkStream IOStream = IRCConnection.GetStream();
+            StreamReader I_Stream = new StreamReader(IOStream);
+            StreamWriter _OStream = new StreamWriter(IOStream);
+            while (true)
+            {
+
             }
         }
 
@@ -136,15 +150,6 @@ namespace DiscordBridge
 
             // Block the program until it is closed.
             await Task.Delay(-1);
-
-            /*
-            await _webhook.SendMessageAsync(
-                "Test webhook message",
-                false,
-                null,
-                @"TestUsername"
-            );
-            */
         }
 
         private Task LogAsync(LogMessage log)
@@ -207,7 +212,6 @@ namespace DiscordBridge
                 await message.Channel.SendMessageAsync("pong!");
         }
 
-        //#pragma warning disable 1998
         public async Task UserNickChanged(SocketGuildUser before, SocketGuildUser after)
         {
             string Username = "discord:" + before.Id;
@@ -225,7 +229,6 @@ namespace DiscordBridge
 
             await Task.Yield();
         }
-        //#pragma warning restore 1998
     }
 
     internal class UserProfile
