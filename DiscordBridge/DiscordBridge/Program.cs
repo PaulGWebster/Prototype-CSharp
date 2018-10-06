@@ -7,15 +7,30 @@ using Discord.WebSocket;
 using System.Configuration;
 using System.Collections.Specialized;
 using System.Collections.Generic;
+using System.Threading;
+using System.Collections.Concurrent;
 
 namespace DiscordBridge
 {
     class Program
     {
+        // Global config
+        static Dictionary<string, string> Config = new Dictionary<string, string>();
+
+        // Registry for keeping associations via nickname changes
+        static Dictionary<string, UserProfile> Registry = new Dictionary<string, UserProfile>();
+
+        // Static queues to and from discord
+        static BlockingCollection<DataPacket> BufferFromDiscord = new BlockingCollection<DataPacket>();
+        static BlockingCollection<DataPacket> BufferToDiscord = new BlockingCollection<DataPacket>();
+
+        // A special place for the IRCMaster
+        static Thread IRCMaster = null;
+        //static Dictionary<string, Thread> Threads = new Dictionary<string, Thread>();
+
+        // Keep the connections to discord private
         private DiscordSocketClient _discobot;
         private DiscordWebhookClient _webhook;
-
-        static Dictionary<string, string> Config = new Dictionary<string, string>();
 
         // Discord.Net heavily utilizes TAP for async, so we create
         // an asynchronous context from the beginning.
@@ -26,9 +41,32 @@ namespace DiscordBridge
             {
                 Config.Add(ConfigKey, APPSettings.GetValues(ConfigKey)[0]);
             }
+
+            // Start a control thread for handling the IRC side of things
+            IRCMaster = new Thread(new ThreadStart(IRCMasterWheel));
+            IRCMaster.Start();
+
             // Start the discord ASYNC shit fest.
             new Program().MainAsync().GetAwaiter().GetResult();
         }
+
+        /// <summary>
+        ///  IRC Controller
+        /// </summary>
+
+        private static void IRCMasterWheel()
+        {
+            while (true)
+            {
+                DataPacket DBlock = BufferFromDiscord.Take();
+                BufferToDiscord.Add(DBlock);
+                Console.WriteLine("Message: {0}", DBlock.Message);
+            }
+        }
+
+        /// <summary>
+        /// Discord related async functions
+        /// </summary>
 
         public async Task MainAsync()
         {
@@ -61,7 +99,7 @@ namespace DiscordBridge
 
             _webhook.Log += LogAsync;
             
-            // Webhook configuration done, lets do the main bot
+            // Webhook configuration done, lets do the main botDiscordUID
 
             if (Config.TryGetValue("DiscordToken", out string DiscordToken))
             {
@@ -69,6 +107,7 @@ namespace DiscordBridge
                 _discobot.Log += LogAsync;
                 _discobot.Ready += ReadyAsync;
                 _discobot.MessageReceived += MessageReceivedAsync;
+                _discobot.GuildMemberUpdated += UserNickChanged;
 
                 // Tokens should be considered secret data, and never hard-coded.
                 await _discobot.LoginAsync(TokenType.Bot, DiscordToken);
@@ -81,6 +120,19 @@ namespace DiscordBridge
 
             // Both API's registered lets proceed.
             await _discobot.StartAsync();
+
+            // Sit waiting for things ToDiscord
+            bool Shutdown = false;
+            while(!Shutdown)
+            {
+                DataPacket DataPkt = BufferToDiscord.Take();
+                await _webhook.SendMessageAsync(
+                    DataPkt.Message,
+                    false,
+                    null,
+                    DataPkt.Identifier
+                );
+            }
 
             // Block the program until it is closed.
             await Task.Delay(-1);
@@ -107,21 +159,90 @@ namespace DiscordBridge
         {
             Console.WriteLine($"{_discobot.CurrentUser} is connected!");
 
+            //'Discord.CollectionWrapper`1[Discord.WebSocket.SocketGuild]' to type 'Discord.WebSocket.SocketGuild'.'
+
+            if (_discobot.Guilds.Count > 1)
+            {
+                throw new Exception("This bot can only mirror a single irc channel to a single discord guild(channel)");
+            }
+
+            foreach (SocketGuild Channel in _discobot.Guilds)
+            {
+                foreach (SocketGuildUser DiscordUser in Channel.Users)
+                {
+                    Registry.Add(
+                        "discord:" + DiscordUser.Id,
+                        new UserProfile
+                        {
+                            DiscordUsername = DiscordUser.Username,
+                            DiscordNickname = DiscordUser.Nickname,
+                            DiscordUID = DiscordUser.Id
+                        }
+                    );
+                }
+            }
+
             return Task.CompletedTask;
         }
 
-        // This is not the recommended way to write a bot - consider
-        // reading over the Commands Framework sample.
         private async Task MessageReceivedAsync(SocketMessage message)
         {
-            Console.WriteLine(message.Content);
-
+            Console.WriteLine("Our id: {0}", _discobot.CurrentUser.Id);
             // The bot should never respond to itself.
             if (message.Author.Id == _discobot.CurrentUser.Id)
                 return;
 
+            BufferFromDiscord.Add(
+                new DataPacket
+                {
+                    IsDiscord = true,
+                    Identifier = message.Author.Id.ToString(),
+                    Message = message.Content
+                }
+            );
+
+            Console.WriteLine("Size of queue: {0}", BufferFromDiscord.Count);
+
             if (message.Content == "!ping")
                 await message.Channel.SendMessageAsync("pong!");
         }
+
+        //#pragma warning disable 1998
+        public async Task UserNickChanged(SocketGuildUser before, SocketGuildUser after)
+        {
+            string Username = "discord:" + before.Id;
+
+            lock (Registry)
+            {
+                if (Registry.TryGetValue(Username, out UserProfile User))
+                {
+                    User.DiscordNickname = after.Nickname;
+                    User.DiscordUsername = after.Username;
+                    Registry.Remove(Username);
+                    Registry.TryAdd(Username, User);
+                }
+            }
+
+            await Task.Yield();
+        }
+        //#pragma warning restore 1998
+    }
+
+    internal class UserProfile
+    {
+        public string IRCNickname { get; internal set; }
+        public string IRCUsername { get; internal set; }
+        public bool IRCIdentified { get; internal set; }
+        public bool IRCConnected { get; internal set; }
+        public UInt64 DiscordUID { get; internal set; }
+        public string DiscordUsername { get; internal set; }
+        public string DiscordNickname { get; internal set; }
+    }
+
+    internal class DataPacket
+    {
+        public string Identifier { get; internal set; }
+        public bool IsDiscord { get; internal set; }
+        public string Message { get; internal set; }
     }
 }
