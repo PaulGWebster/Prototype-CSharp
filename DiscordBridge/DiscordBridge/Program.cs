@@ -12,6 +12,7 @@ using System.Threading;
 using System.Collections.Concurrent;
 using System.Net.Sockets;
 using System.IO;
+using System.Net;
 
 namespace DiscordBridge
 {
@@ -68,13 +69,100 @@ namespace DiscordBridge
         private static void Governor()
         {
             TcpClient IRCConnection = new TcpClient();
-            IRCConnection.Connect(@"irc.0x00sec.org", 6667);
-            NetworkStream IOStream = IRCConnection.GetStream();
-            StreamReader I_Stream = new StreamReader(IOStream);
-            StreamWriter _OStream = new StreamWriter(IOStream);
+            NetworkStream IOStream = null;
+            StreamReader I_Stream = null;
+            StreamWriter _OStream = null; 
+            IRCState CState = new IRCState();
+            List<String> ReadBuffer = new List<String>();
+
             while (true)
             {
+                // Force clear the IRC Recv buffer
+                ReadBuffer = new List<String>();
 
+                // this block just greedily processes all message received from irc, it will always take around 5ms.
+                // we are using this as a cpu brake
+                if (IRCConnection.Connected)
+                {
+                    // Read all messages first - this will always fail
+                    I_Stream.BaseStream.ReadTimeout = 5;
+                    try
+                    {
+                        while (true)
+                        {
+                            ReadBuffer.Add(I_Stream.ReadLine());
+                        }
+                    }
+                    catch
+                    {
+                        // Reset the standard timeout
+                        I_Stream.BaseStream.ReadTimeout = 10;
+                    }
+                }
+                else
+                {
+                    Thread.Sleep(5);
+                }
+
+                // Handle any pending inbound IRC messages
+                foreach (string IRCEvent in ReadBuffer)
+                {
+                    Console.WriteLine(IRCEvent);
+                    string[] IRCRead = IRCEvent.Split(' ');
+                    switch (IRCRead.Length)
+                    {
+                        case 2:
+                            if (IRCRead[0].Equals("PING"))
+                            {
+                                _OStream.WriteLine("PONG " + IRCRead[1]);
+                                _OStream.Flush();
+                            }
+                            break;
+                        default:
+                            break;
+                    }
+                }
+
+                if (!CState.Connected)
+                {
+                    // First of all check our IRC state if we are not connecting or connected we should be!
+                    if (!CState.Connecting)
+                    {
+                        if (IRCConnection.Connected)
+                        {
+                            IRCConnection.Close();
+                        }
+                        Console.WriteLine("Connecting to IRC");
+                        IRCConnection = new TcpClient();
+                        IRCConnection.Connect(@"irc.0x00sec.org", 6667);
+                        IOStream = IRCConnection.GetStream();
+                        I_Stream = new StreamReader(IOStream);
+                        _OStream = new StreamWriter(IOStream);
+                        CState = new IRCState
+                        {
+                            Connecting = true
+                        };
+                    }
+                    else if (CState.Connecting && !CState.AuthSend)
+                    {
+                        // We have not sent authoritive info yet, lets do it!
+                        Console.WriteLine("Sending auth details");
+                        _OStream.WriteLine(@"USER DiscordB DiscordB DiscordB :DiscordBirdge (nugget)");
+                        _OStream.WriteLine(@"NICK DickSword");
+                        _OStream.Flush();
+                        CState.AuthSend = true;
+                        CState.AuthSent = DateTime.UtcNow;
+                    }
+                    else if (CState.Connecting && CState.AuthSend && (DateTime.UtcNow.Subtract(CState.AuthSent).Seconds > 10))
+                    {
+                        // It took longer than 10 seconds and we have not heard jack
+                        // Force the connection to reset next iteration
+                        CState.Connecting = false;
+                        CState.Connected = false;
+                        CState.AuthSend = false;
+                        Console.WriteLine("Connection attempt reset.");
+                    }
+                }
             }
         }
 
@@ -229,6 +317,19 @@ namespace DiscordBridge
 
             await Task.Yield();
         }
+    }
+
+    internal class IRCState
+    {
+        public IRCState()
+        {
+
+        }
+        public bool Connecting { get; internal set; }
+        public bool Connected { get; internal set; }
+        public bool AuthSend { get; internal set; }
+        public string Expect { get; internal set; }
+        public DateTime AuthSent { get; internal set; }
     }
 
     internal class UserProfile
