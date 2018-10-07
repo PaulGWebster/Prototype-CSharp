@@ -36,6 +36,9 @@ namespace DiscordBridge
         private DiscordSocketClient _discobot;
         private DiscordWebhookClient _webhook;
 
+        // The webhook ID is reffered to alot so lets make it static
+        static UInt64 WebHookID = 0;
+
         // Discord.Net heavily utilizes TAP for async, so we create
         // an asynchronous context from the beginning.
         static void Main(string[] args)
@@ -44,6 +47,10 @@ namespace DiscordBridge
             foreach (string ConfigKey in APPSettings)
             {
                 Config.Add(ConfigKey, APPSettings.GetValues(ConfigKey)[0]);
+                if (ConfigKey.Equals("WebHookID"))
+                {
+                    WebHookID = Convert.ToUInt64(APPSettings.GetValues(ConfigKey)[0]);
+                }
             }
 
             // Start a control thread for handling the IRC side of things
@@ -167,6 +174,7 @@ namespace DiscordBridge
                                         Message = Message + " ";
                                     }
                                 }
+                                Message = Message.Substring(1);
                             }
 
                             BufferToDiscord.Add(
@@ -191,14 +199,25 @@ namespace DiscordBridge
                     {
                         // Find the key information
                         DataPacket DataPkt = BufferFromDiscord.Take();
-                        UserProfile OurUser = null;
-                        while (!Registry.TryGetValue("discord:" + DataPkt.Identifier, out OurUser)) { }
-                        _OStream.WriteLine(
-                            "PRIVMSG {0} :<{1}> {2}",
-                            IRCChannel,
-                            OurUser.DiscordNickname ?? OurUser.DiscordUsername,
-                            DataPkt.Message
-                        );
+
+                        if (Registry.TryGetValue("discord:" + DataPkt.Identifier, out UserProfile OurUser)) {
+                            _OStream.WriteLine(
+                                "PRIVMSG {0} :<{1}> {2}",
+                                IRCChannel,
+                                OurUser.DiscordNickname ?? OurUser.DiscordUsername,
+                                DataPkt.Message
+                            );
+                        }
+                        else
+                        {
+                            _OStream.WriteLine(
+                                "PRIVMSG {0} :<{1}> {2}",
+                                IRCChannel,
+                                "UnknownDiscordID",
+                                DataPkt.Message
+                            );
+                        }
+                        
                     }
                 }
                 else
@@ -232,7 +251,6 @@ namespace DiscordBridge
                         Console.WriteLine("Sending auth details");
                         _OStream.WriteLine(@"USER DiscordB DiscordB DiscordB :DiscordBirdge (nugget)");
                         _OStream.WriteLine(@"NICK {0}",IRCNickname);
-                        _OStream.Flush();
                         CState.AuthSend = true;
                         CState.AuthSent = DateTime.UtcNow;
                     }
@@ -270,13 +288,11 @@ namespace DiscordBridge
             bool ErrorCondition = false;
             if (
                 Config.TryGetValue("WebHookToken",out string WebHookToken)
-                && 
-                Config.TryGetValue("WebHookID", out string WebHookID)
             )
             {
                 try
                 {
-                    _webhook = new DiscordWebhookClient(Convert.ToUInt64(WebHookID), WebHookToken);
+                    _webhook = new DiscordWebhookClient(WebHookID, WebHookToken);
                 }
                 catch
                 {
@@ -323,6 +339,7 @@ namespace DiscordBridge
             while(!Shutdown)
             {
                 DataPacket DataPkt = BufferToDiscord.Take();
+                
                 await _webhook.SendMessageAsync(
                     DataPkt.Message,
                     false,
@@ -375,10 +392,15 @@ namespace DiscordBridge
 
         private async Task MessageReceivedAsync(SocketMessage message)
         {
-            Console.WriteLine("Our id: {0}", _discobot.CurrentUser.Id);
             // The bot should never respond to itself.
-            if (message.Author.Id == _discobot.CurrentUser.Id)
+            if (
+                message.Author.Id == _discobot.CurrentUser.Id
+                ||
+                message.Author.Id == WebHookID
+            )
+            {
                 return;
+            }
 
             BufferFromDiscord.Add(
                 new DataPacket
