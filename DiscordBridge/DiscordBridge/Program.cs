@@ -75,6 +75,9 @@ namespace DiscordBridge
             IRCState CState = new IRCState();
             List<String> ReadBuffer = new List<String>();
 
+            string IRCChannel = string.Empty;
+            while (!Config.TryGetValue("IRCChannel", out IRCChannel)) { Thread.Sleep(1); }
+
             while (true)
             {
                 // Force clear the IRC Recv buffer
@@ -113,24 +116,22 @@ namespace DiscordBridge
                         IRCRead.Length > 8 
                     )
                     {
+                        Console.WriteLine("Here: {0}",IRCRead[7]);
                         if (
-                            IRCRead[7].Equals("IDENTIFY") &&
+                            IRCRead[6].Equals("registered") &&
                             Config.TryGetValue("IRCNicknamePass", out string IRCNicknamePass)
                         )
                         {
                             Console.WriteLine("Sending password: {0}", IRCNicknamePass);
                             _OStream.WriteLine("PRIVMSG NickServ :IDENTIFY {0}", IRCNicknamePass);
-                            _OStream.Flush();
                         }
                         else if (
-                            IRCRead[4].Equals("accepted") &&
-                            Config.TryGetValue("IRCChannel", out string IRCChannel)
+                            IRCRead[4].Equals("accepted") 
                         )
                         {
                             CState.NickAuth = true;
                             _OStream.WriteLine("JOIN {0}", IRCChannel);
                             _OStream.WriteLine("PRIVMSG CHANSERV :VOICE {0}", IRCChannel);
-                            _OStream.Flush();
                         }
                     }
                     else if (IRCRead.Length >= 2)
@@ -138,19 +139,69 @@ namespace DiscordBridge
                         if (IRCRead[0].Equals("PING"))
                         {
                             _OStream.WriteLine("PONG " + IRCRead[1]);
-                            _OStream.Flush();
                         }
                         else if (IRCRead[1].Equals("001"))
                         {
                             CState.Connected = true;
                             CState.Connecting = false;
                         }
+                        else if (IRCRead[1].Equals("PRIVMSG"))
+                        {
+                            string Nickname = String.Empty;
+                            string Ident = String.Empty;
+                            string Hostname = String.Empty;
+                            string Message = String.Empty;
+
+                            {
+                                string Sign = IRCRead[0].Substring(1);
+                                string[] NickSplit = Sign.Split('!');
+                                Nickname = NickSplit[0];
+                                string[] UserSplit = Sign.Split('@');
+                                Ident = UserSplit[0];
+                                Hostname = UserSplit[1];
+                                for (int i = 3; i < IRCRead.Length; i++)
+                                {
+                                    Message = Message + IRCRead[i];
+                                    if (i+1 < IRCRead.Length)
+                                    {
+                                        Message = Message + " ";
+                                    }
+                                }
+                            }
+
+                            BufferToDiscord.Add(
+                                new DataPacket
+                                {
+                                    Identifier = Nickname,
+                                    Message = Message
+                                }
+                            );
+                        }
                     }
                     
                     Console.WriteLine("Unhandled, {0}", IRCEvent);
                 }
 
-                if (!CState.Connected)
+                // If we are connected and authed and happy send any messages we have waiting
+                // In this situation we should really create a bot
+                if (CState.Connected)
+                {
+                    // Primary work
+                    if (BufferFromDiscord.Count > 0)
+                    {
+                        // Find the key information
+                        DataPacket DataPkt = BufferFromDiscord.Take();
+                        UserProfile OurUser = null;
+                        while (!Registry.TryGetValue("discord:" + DataPkt.Identifier, out OurUser)) { }
+                        _OStream.WriteLine(
+                            "PRIVMSG {0} :<{1}> {2}",
+                            IRCChannel,
+                            OurUser.DiscordNickname ?? OurUser.DiscordUsername,
+                            DataPkt.Message
+                        );
+                    }
+                }
+                else
                 {
                     // First of all check our IRC state if we are not connecting or connected we should be!
                     if (!CState.Connecting)
@@ -171,12 +222,16 @@ namespace DiscordBridge
                             Connecting = true
                         };
                     }
-                    else if (CState.Connecting && !CState.AuthSend)
+                    else if (
+                        CState.Connecting && 
+                        !CState.AuthSend &&
+                        Config.TryGetValue("IRCNickname", out string IRCNickname)
+                    )
                     {
                         // We have not sent authoritive info yet, lets do it!
                         Console.WriteLine("Sending auth details");
                         _OStream.WriteLine(@"USER DiscordB DiscordB DiscordB :DiscordBirdge (nugget)");
-                        _OStream.WriteLine(@"NICK DickSword");
+                        _OStream.WriteLine(@"NICK {0}",IRCNickname);
                         _OStream.Flush();
                         CState.AuthSend = true;
                         CState.AuthSent = DateTime.UtcNow;
@@ -189,6 +244,18 @@ namespace DiscordBridge
                         CState.Connected = false;
                         CState.AuthSend = false;
                         Console.WriteLine("Connection attempt reset.");
+                    }
+                }
+
+                // Send any pending data thats in the buffer
+                if (IRCConnection.Connected)
+                {
+                    try
+                    {
+                        _OStream.Flush();
+                    }
+                    catch (Exception ee) {
+                        Console.WriteLine("IRC Exception: {0}", ee.Message);
                     }
                 }
             }
@@ -316,7 +383,6 @@ namespace DiscordBridge
             BufferFromDiscord.Add(
                 new DataPacket
                 {
-                    IsDiscord = true,
                     Identifier = message.Author.Id.ToString(),
                     Message = message.Content
                 }
@@ -375,7 +441,6 @@ namespace DiscordBridge
     internal class DataPacket
     {
         public string Identifier { get; internal set; }
-        public bool IsDiscord { get; internal set; }
         public string Message { get; internal set; }
     }
 }
