@@ -80,12 +80,11 @@ namespace DiscordBridge
                 // Force clear the IRC Recv buffer
                 ReadBuffer = new List<String>();
 
-                // this block just greedily processes all message received from irc, it will always take around 5ms.
+                // this block just greedily processes all message received from irc, it will always take at least 5ms.
                 // we are using this as a cpu brake
                 if (IRCConnection.Connected)
                 {
                     // Read all messages first - this will always fail
-                    I_Stream.BaseStream.ReadTimeout = 5;
                     try
                     {
                         while (true)
@@ -95,32 +94,60 @@ namespace DiscordBridge
                     }
                     catch
                     {
-                        // Reset the standard timeout
-                        I_Stream.BaseStream.ReadTimeout = 10;
+                        // Do nothing
                     }
                 }
                 else
                 {
+                    // If we are not connected to IRC, then sleep 5ms anyway
                     Thread.Sleep(5);
                 }
 
-                // Handle any pending inbound IRC messages
+                // Alot of IF's
                 foreach (string IRCEvent in ReadBuffer)
                 {
-                    Console.WriteLine(IRCEvent);
                     string[] IRCRead = IRCEvent.Split(' ');
-                    switch (IRCRead.Length)
+                    if (
+                        !CState.NickAuth &&
+                        IRCRead[0].Equals(":NickServ!services@services.hybrid.local") &&
+                        IRCRead.Length > 8 
+                    )
                     {
-                        case 2:
-                            if (IRCRead[0].Equals("PING"))
-                            {
-                                _OStream.WriteLine("PONG " + IRCRead[1]);
-                                _OStream.Flush();
-                            }
-                            break;
-                        default:
-                            break;
+                        if (
+                            IRCRead[7].Equals("IDENTIFY") &&
+                            Config.TryGetValue("IRCNicknamePass", out string IRCNicknamePass)
+                        )
+                        {
+                            Console.WriteLine("Sending password: {0}", IRCNicknamePass);
+                            _OStream.WriteLine("PRIVMSG NickServ :IDENTIFY {0}", IRCNicknamePass);
+                            _OStream.Flush();
+                        }
+                        else if (
+                            IRCRead[4].Equals("accepted") &&
+                            Config.TryGetValue("IRCChannel", out string IRCChannel)
+                        )
+                        {
+                            CState.NickAuth = true;
+                            _OStream.WriteLine("JOIN {0}", IRCChannel);
+                            _OStream.WriteLine("PRIVMSG CHANSERV :VOICE {0}", IRCChannel);
+                            _OStream.Flush();
+                        }
                     }
+                    else if (IRCRead.Length >= 2)
+                    {
+                        if (IRCRead[0].Equals("PING"))
+                        {
+                            _OStream.WriteLine("PONG " + IRCRead[1]);
+                            _OStream.Flush();
+                        }
+                        else if (IRCRead[1].Equals("001"))
+                        {
+                            CState.Connected = true;
+                            CState.Connecting = false;
+                        }
+                    }
+                    
+                    Console.WriteLine("Unhandled, {0}", IRCEvent);
                 }
 
                 if (!CState.Connected)
@@ -137,6 +164,7 @@ namespace DiscordBridge
                         IRCConnection.Connect(@"irc.0x00sec.org", 6667);
                         IOStream = IRCConnection.GetStream();
                         I_Stream = new StreamReader(IOStream);
+                        I_Stream.BaseStream.ReadTimeout = 5;
                         _OStream = new StreamWriter(IOStream);
                         CState = new IRCState
                         {
@@ -330,6 +358,7 @@ namespace DiscordBridge
         public bool AuthSend { get; internal set; }
         public string Expect { get; internal set; }
         public DateTime AuthSent { get; internal set; }
+        public bool NickAuth { get; internal set; }
     }
 
     internal class UserProfile
