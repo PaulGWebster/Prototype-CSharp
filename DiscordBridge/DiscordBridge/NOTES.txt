@@ -1,0 +1,5 @@
+﻿Discord will not notice if a new user joins or an old user leaves the channel
+Discord nickname may be unset if the nickname is the same as the username.
+IRC -> Discord needs no special handling for nicknames
+Discord -> IRC  requires special handling,
+	nickname : substr(DISCORD.NICKNAME,0,16) + DISCORD.INT(4) 

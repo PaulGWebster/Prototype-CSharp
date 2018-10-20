@@ -22,7 +22,8 @@ namespace DiscordBridge
         static Dictionary<string, string> Config = new Dictionary<string, string>();
 
         // Registry for keeping associations via nickname changes
-        static Dictionary<string, UserProfile> Registry = new Dictionary<string, UserProfile>();
+        static Dictionary<string, DiscordProfile> Registry = new Dictionary<string, DiscordProfile>();
+        static Dictionary<string, IRCConnection> IRCConnections = new Dictionary<string, IRCConnection>();
 
         // Static queues to and from discord
         static BlockingCollection<DataPacket> BufferFromDiscord = new BlockingCollection<DataPacket>();
@@ -30,8 +31,9 @@ namespace DiscordBridge
 
         // A special place for the IRCMaster
         static Thread IRCMaster = null;
-        //static Dictionary<string, Thread> Threads = new Dictionary<string, Thread>();
-
+        static Thread IRCConManager = null;
+        static Thread IRCConProcessor = null;
+        
         // Keep the connections to discord private
         private DiscordSocketClient _discobot;
         private DiscordWebhookClient _webhook;
@@ -53,9 +55,17 @@ namespace DiscordBridge
                 }
             }
 
-            // Start a control thread for handling the IRC side of things
-            IRCMaster = new Thread(new ThreadStart(Governor));
+            // Start a control thread for handling the discord??
+            IRCMaster = new Thread(new ThreadStart(ComManager));
             IRCMaster.Start();
+
+            // Start a control thread for handling the IRC side of things
+            IRCConManager = new Thread(new ThreadStart(IRCCons));
+            IRCConManager.Start();
+
+            // Start a thread for handling data in and out to IRC Bots
+            IRCConProcessor = new Thread(new ThreadStart(IRCProcessor));
+            IRCConProcessor.Start();
 
             // Start the discord ASYNC shit fest.
             new Program().MainAsync().GetAwaiter().GetResult();
@@ -64,218 +74,227 @@ namespace DiscordBridge
         /// <summary>
         ///  IRC Controller
         /// </summary>
-        /*
-            while (true)
-            {
-                DataPacket DBlock = BufferFromDiscord.Take();
-                //BufferToDiscord.Add(DBlock);
-                Console.WriteLine("Message: {0}", DBlock.Message);
-            }
-        */
 
-        private static void Governor()
+        private static void IRCProcessor()
         {
-            TcpClient IRCConnection = new TcpClient();
-            NetworkStream IOStream = null;
-            StreamReader I_Stream = null;
-            StreamWriter _OStream = null; 
-            IRCState CState = new IRCState();
-            List<String> ReadBuffer = new List<String>();
 
+        }
+
+        /// <summary>
+        ///  IRC Controller
+        ///  This thread specifically deals with the connection process of IRC Bots and base functions like PING/PONG
+        ///  and the initial nickname/username
+        /// </summary>
+
+        private static void IRCCons()
+        {
             string IRCChannel = string.Empty;
+            string IRCServer = string.Empty;
+            string IRCPort = string.Empty;
             while (!Config.TryGetValue("IRCChannel", out IRCChannel)) { Thread.Sleep(1); }
+            while (!Config.TryGetValue("IRCServer", out IRCServer)) { Thread.Sleep(1); }
+            while (!Config.TryGetValue("IRCPort", out IRCPort)) { Thread.Sleep(1); }
 
+            IRCConnections = new Dictionary<string, IRCConnection>();
+            /*
+                IOStream = Connection.GetStream();
+                InputStream = new StreamReader(IOStream);
+                InputStream.BaseStream.ReadTimeout = 5;
+                OutputStream = new StreamWriter(IOStream);
+            */
             while (true)
             {
-                // Force clear the IRC Recv buffer
-                ReadBuffer = new List<String>();
-
-                // this block just greedily processes all message received from irc, it will always take at least 5ms.
-                // we are using this as a cpu brake
-                if (IRCConnection.Connected)
+                // Are all bots in the connected state?
+                lock (IRCConnections)
                 {
-                    // Read all messages first - this will always fail
-                    try
+                    foreach (KeyValuePair<string, IRCConnection> IRCSet in IRCConnections)
                     {
-                        while (true)
-                        {
-                            ReadBuffer.Add(I_Stream.ReadLine());
-                        }
-                    }
-                    catch
-                    {
-                        // Do nothing
-                    }
-                }
-                else
-                {
-                    // If we are not connected to IRC, then sleep 5ms anyway
-                    Thread.Sleep(5);
-                }
+                        string BotID = IRCSet.Key;
+                        IRCConnection Bot = IRCSet.Value;
 
-                // Alot of IF's
-                foreach (string IRCEvent in ReadBuffer)
-                {
-                    string[] IRCRead = IRCEvent.Split(' ');
-                    if (
-                        !CState.NickAuth &&
-                        IRCRead[0].Equals(":NickServ!services@services.hybrid.local") &&
-                        IRCRead.Length > 8 
-                    )
-                    {
-                        Console.WriteLine("Here: {0}",IRCRead[7]);
-                        if (
-                            IRCRead[6].Equals("registered") &&
-                            Config.TryGetValue("IRCNicknamePass", out string IRCNicknamePass)
-                        )
+                        // Make sure the states are in sync
+                        if (!Bot.Connection.Connected)
                         {
-                            Console.WriteLine("Sending password: {0}", IRCNicknamePass);
-                            _OStream.WriteLine("PRIVMSG NickServ :IDENTIFY {0}", IRCNicknamePass);
-                        }
-                        else if (
-                            IRCRead[4].Equals("accepted") 
-                        )
-                        {
-                            CState.NickAuth = true;
-                            _OStream.WriteLine("JOIN {0}", IRCChannel);
-                            _OStream.WriteLine("PRIVMSG CHANSERV :VOICE {0}", IRCChannel);
-                        }
-                    }
-                    else if (IRCRead.Length >= 2)
-                    {
-                        if (IRCRead[0].Equals("PING"))
-                        {
-                            _OStream.WriteLine("PONG " + IRCRead[1]);
-                        }
-                        else if (IRCRead[1].Equals("001"))
-                        {
-                            CState.Connected = true;
-                            CState.Connecting = false;
-                        }
-                        else if (IRCRead[1].Equals("PRIVMSG"))
-                        {
-                            string Nickname = String.Empty;
-                            string Ident = String.Empty;
-                            string Hostname = String.Empty;
-                            string Message = String.Empty;
-
+                            if (Bot.State.Connecting)
                             {
-                                string Sign = IRCRead[0].Substring(1);
-                                string[] NickSplit = Sign.Split('!');
-                                Nickname = NickSplit[0];
-                                string[] UserSplit = Sign.Split('@');
-                                Ident = UserSplit[0];
-                                Hostname = UserSplit[1];
-                                for (int i = 3; i < IRCRead.Length; i++)
-                                {
-                                    Message = Message + IRCRead[i];
-                                    if (i+1 < IRCRead.Length)
-                                    {
-                                        Message = Message + " ";
-                                    }
-                                }
-                                Message = Message.Substring(1);
+                                Console.WriteLine("Bot Reset");
+                                Bot.Reset();
                             }
-
-                            BufferToDiscord.Add(
-                                new DataPacket
+                            else
+                            {
+                                Console.WriteLine("Connecting a bot");
+                                Bot.Reset();
+                                Bot.State.Connecting = true;
+                                //Bot.Connection.Connect(IRCServer, Convert.ToInt32(IRCPort));
+                                Bot.Connection.Connect(IRCServer, Convert.ToInt32(IRCPort));
+                                Bot.IOStream = Bot.Connection.GetStream();
+                                Bot.InputStream = new StreamReader(Bot.IOStream);
+                                Bot.InputStream.BaseStream.ReadTimeout = 2;
+                                Bot.OutputStream = new StreamWriter(Bot.IOStream)
                                 {
-                                    Identifier = Nickname,
-                                    Message = Message
-                                }
-                            );
+                                    AutoFlush = true
+                                };
+                            }
+                            continue;
                         }
-                    }
-                    
-                    Console.WriteLine("Unhandled, {0}", IRCEvent);
-                }
 
-                // If we are connected and authed and happy send any messages we have waiting
-                // In this situation we should really create a bot
-                if (CState.Connected)
-                {
-                    // Primary work
-                    if (BufferFromDiscord.Count > 0)
-                    {
-                        // Find the key information
-                        DataPacket DataPkt = BufferFromDiscord.Take();
-
-                        if (Registry.TryGetValue("discord:" + DataPkt.Identifier, out UserProfile OurUser)) {
-                            _OStream.WriteLine(
-                                "PRIVMSG {0} :<{1}> {2}",
-                                IRCChannel,
-                                OurUser.DiscordNickname ?? OurUser.DiscordUsername,
-                                DataPkt.Message
-                            );
+                        // And alot of state changes
+                        if (Bot.State.Connected)
+                        {
+                            // Do nothing 
+                            continue;
+                        }
+                        else if (Bot.State.Connecting)
+                        {
+                            if (Bot.State.AuthSend)
+                            {
+                                try
+                                {
+                                    Bot.ReadBuffer.Add(Bot.InputStream.ReadLine());
+                                }
+                                catch
+                                {
+                                    // We do not care what the problem was
+                                }
+                            }
+                            else
+                            {
+                                Bot.OutputStream.WriteLine(@"USER {0} USER1 USER2 :DiscordBirdge (nugget)", Bot.Profile.IRCUsername);
+                                Bot.OutputStream.WriteLine(@"NICK {0}", Bot.Profile.IRCNickname);
+                                Bot.State.AuthSend = true;
+                            }
                         }
                         else
                         {
-                            _OStream.WriteLine(
-                                "PRIVMSG {0} :<{1}> {2}",
-                                IRCChannel,
-                                "UnknownDiscordID",
-                                DataPkt.Message
+                            Console.WriteLine(
+                                "ELSE HIT connected({0}) connecting({1}) authsend({2})",
+                                Bot.State.Connected,
+                                Bot.State.Connecting,
+                                Bot.State.AuthSend
                             );
+                            continue;
                         }
-                        
+
+                        // Deal with possible reads here
+                        // Did we get what we wanted to signify we are connected?
+                        foreach (string IRCEvent in Bot.ReadBuffer)
+                        {
+                            string[] IRCRead = IRCEvent.Split(' ');
+                            if (IRCRead.Length >= 2)
+                            {
+                                if (IRCRead[0].Equals("PING"))
+                                {
+                                    Bot.OutputStream.WriteLine("PONG " + IRCRead[1]);
+                                }
+                                else if (IRCRead[1].Equals("001"))
+                                {
+                                    Bot.State.Connected = true;
+                                    Bot.State.Connecting = false;
+                                    Bot.OutputStream.WriteLine(@"JOIN {0}", IRCChannel);
+                                }
+                            }
+                        }
+
+                        // Clear the ReadBuffer
+                        Bot.ReadBuffer.Clear();
+
+                        // Need continue to skip this
+                        Bot.State.LastChange = DateTime.UtcNow;
                     }
+                }
+                Thread.Sleep(1000);
+            }
+        }
+
+        /// <summary>
+        /// ComManager distributes and sorts messages into the right queue for discord or IRC
+        /// </summary>
+
+        private static void ComManager()
+        {
+            string IRCChannel = string.Empty;
+            string IRCServer = string.Empty;
+            string IRCPort = string.Empty;
+            string IRCNickname = string.Empty;
+            string IRCNicknamePass = string.Empty;
+            while (!Config.TryGetValue("IRCChannel", out IRCChannel)) { Thread.Sleep(1); }
+            while (!Config.TryGetValue("IRCServer", out IRCServer)) { Thread.Sleep(1); }
+            while (!Config.TryGetValue("IRCPort", out IRCPort)) { Thread.Sleep(1); }
+            while (!Config.TryGetValue("IRCNickname", out IRCNickname)) { Thread.Sleep(1); }
+            while (!Config.TryGetValue("IRCNicknamePass", out IRCNicknamePass)) { Thread.Sleep(1); }
+
+            IRCConnection Bot = new IRCConnection(IRCServer,Convert.ToInt32(IRCPort),"DickSword","DiscoBot","master");
+
+            while (true)
+            {
+                if ( (!Bot.State.Connecting && !Bot.State.Connected) || !Bot.Connection.Connected )
+                {
+                    Console.WriteLine("Connecting Main");
+                    Bot.Reset();
+                    Bot.State.Connecting = true;
+                    Bot.Connection.Connect(IRCServer, Convert.ToInt32(IRCPort));
+                    Bot.IOStream = Bot.Connection.GetStream();
+                    Bot.InputStream = new StreamReader(Bot.IOStream);
+                    Bot.InputStream.BaseStream.ReadTimeout = 5;
+                    Bot.OutputStream = new StreamWriter(Bot.IOStream)
+                    {
+                        AutoFlush = true
+                    };
+                }
+                else if (Bot.State.Connecting && !Bot.State.AuthSend)
+                {
+                    Console.WriteLine("Sending user/nick");
+                    Bot.OutputStream.WriteLine(@"USER {0} USER1 USER2 :DiscordBirdge (nugget)", "DiscoBot");
+                    Bot.OutputStream.WriteLine(@"NICK {0}", IRCNickname);
+                    Bot.State.AuthSend = true;
                 }
                 else
                 {
-                    // First of all check our IRC state if we are not connecting or connected we should be!
-                    if (!CState.Connecting)
-                    {
-                        if (IRCConnection.Connected)
-                        {
-                            IRCConnection.Close();
-                        }
-                        Console.WriteLine("Connecting to IRC");
-                        IRCConnection = new TcpClient();
-                        IRCConnection.Connect(@"irc.0x00sec.org", 6667);
-                        IOStream = IRCConnection.GetStream();
-                        I_Stream = new StreamReader(IOStream);
-                        I_Stream.BaseStream.ReadTimeout = 5;
-                        _OStream = new StreamWriter(IOStream);
-                        CState = new IRCState
-                        {
-                            Connecting = true
-                        };
-                    }
-                    else if (
-                        CState.Connecting && 
-                        !CState.AuthSend &&
-                        Config.TryGetValue("IRCNickname", out string IRCNickname)
-                    )
-                    {
-                        // We have not sent authoritive info yet, lets do it!
-                        Console.WriteLine("Sending auth details");
-                        _OStream.WriteLine(@"USER DiscordB DiscordB DiscordB :DiscordBirdge (nugget)");
-                        _OStream.WriteLine(@"NICK {0}",IRCNickname);
-                        CState.AuthSend = true;
-                        CState.AuthSent = DateTime.UtcNow;
-                    }
-                    else if (CState.Connecting && CState.AuthSend && (DateTime.UtcNow.Subtract(CState.AuthSent).Seconds > 10))
-                    {
-                        // It took longer than 10 seconds and we have not heard jack
-                        // Force the connection to reset next iteration
-                        CState.Connecting = false;
-                        CState.Connected = false;
-                        CState.AuthSend = false;
-                        Console.WriteLine("Connection attempt reset.");
-                    }
+                    // Read all messages first - this will always fail
+                    try { Bot.ReadBuffer.Add(Bot.InputStream.ReadLine()); }
+                    catch { }
                 }
 
-                // Send any pending data thats in the buffer
-                if (IRCConnection.Connected)
+                // If we have nothing to read may as well goto the next iteration
+                if (Bot.ReadBuffer.Count == 0)
                 {
-                    try
-                    {
-                        _OStream.Flush();
-                    }
-                    catch (Exception ee) {
-                        Console.WriteLine("IRC Exception: {0}", ee.Message);
-                    }
+                    Thread.Sleep(10);
+                    continue;
                 }
+
+                // Deal with IRC cack
+                foreach (string IRCEvent in Bot.ReadBuffer)
+                {
+                    if (IRCEvent == null) { continue; }
+                    Console.WriteLine("Read: {0}", IRCEvent);
+                    string[] IRCRead = IRCEvent.Split(' ');
+                    if (IRCRead[0].Equals("PING"))
+                    {
+                        Bot.OutputStream.WriteLine("PONG " + IRCRead[1]);
+                    }
+                    else if (IRCRead.Length >= 2)
+                    {
+                        if (IRCRead[1].Equals("001"))
+                        {
+                            Bot.State.Connected = true;
+                            Bot.State.Connecting = false;
+                            Bot.OutputStream.WriteLine("PRIVMSG NickServ :IDENTIFY {0}", IRCNicknamePass);
+                        }
+                        else if (IRCRead.Length < 4) { continue; }
+                        else if (
+                            IRCRead[0].Equals(":NickServ!services@services.hybrid.local") && 
+                            IRCRead[3].Equals(":Password") && 
+                            IRCRead[4].Equals("accepted")
+                        )
+                        {
+                            Bot.OutputStream.WriteLine("JOIN {0}", IRCChannel);
+                        }
+                    }
+                    
+                    //:NickServ!services@services.hybrid.local NOTICE DickSword :Password accepted - you are now recognized.
+                }
+
+                Bot.ReadBuffer.Clear();
             }
         }
 
@@ -287,7 +306,7 @@ namespace DiscordBridge
         {
             bool ErrorCondition = false;
             if (
-                Config.TryGetValue("WebHookToken",out string WebHookToken)
+                Config.TryGetValue("WebHookToken", out string WebHookToken)
             )
             {
                 try
@@ -303,7 +322,7 @@ namespace DiscordBridge
             {
                 ErrorCondition = true;
             }
-            
+
             if (ErrorCondition)
             {
                 Console.WriteLine("Failure extracting WebHook token or id");
@@ -311,7 +330,7 @@ namespace DiscordBridge
             }
 
             _webhook.Log += LogAsync;
-            
+
             // Webhook configuration done, lets do the main botDiscordUID
 
             if (Config.TryGetValue("DiscordToken", out string DiscordToken))
@@ -336,10 +355,10 @@ namespace DiscordBridge
 
             // Sit waiting for things ToDiscord
             bool Shutdown = false;
-            while(!Shutdown)
+            while (!Shutdown)
             {
                 DataPacket DataPkt = BufferToDiscord.Take();
-                
+
                 await _webhook.SendMessageAsync(
                     DataPkt.Message,
                     false,
@@ -377,7 +396,7 @@ namespace DiscordBridge
                 {
                     Registry.Add(
                         "discord:" + DiscordUser.Id,
-                        new UserProfile
+                        new DiscordProfile
                         {
                             DiscordUsername = DiscordUser.Username,
                             DiscordNickname = DiscordUser.Nickname,
@@ -393,11 +412,7 @@ namespace DiscordBridge
         private async Task MessageReceivedAsync(SocketMessage message)
         {
             // The bot should never respond to itself.
-            if (
-                message.Author.Id == _discobot.CurrentUser.Id
-                ||
-                message.Author.Id == WebHookID
-            )
+            if ( message.Author.Id == _discobot.CurrentUser.Id || message.Author.Id == WebHookID )
             {
                 return;
             }
@@ -406,7 +421,8 @@ namespace DiscordBridge
                 new DataPacket
                 {
                     Identifier = message.Author.Id.ToString(),
-                    Message = message.Content
+                    Message = message.Content,
+                    Discriminator = message.Author.Discriminator
                 }
             );
 
@@ -422,7 +438,7 @@ namespace DiscordBridge
 
             lock (Registry)
             {
-                if (Registry.TryGetValue(Username, out UserProfile User))
+                if (Registry.TryGetValue(Username, out DiscordProfile User))
                 {
                     User.DiscordNickname = after.Nickname;
                     User.DiscordUsername = after.Username;
@@ -435,26 +451,57 @@ namespace DiscordBridge
         }
     }
 
+    internal class IRCConnection
+    {
+        public TcpClient Connection { get; set; }
+        public NetworkStream IOStream { get; set; }
+        public StreamReader InputStream { get; set; }
+        public StreamWriter OutputStream { get; set; }
+        public IRCState State { get; set; }
+        public List<String> ReadBuffer { get; set; }
+        public IRCProfile Profile { get; set; }
+        public string DiscordUnique { get; set; }
+        public Queue<DataPacket> FromDiscord { get; set; }
+        public IRCConnection(string IRCServer, int IRCPort, string IRCNickname, string IRCUsername, string DiscordRef )
+        {
+            FromDiscord = new Queue<DataPacket>();
+            DiscordUnique = DiscordRef;
+            Profile = new IRCProfile
+            {
+                IRCNickname = IRCNickname,
+                IRCUsername = IRCUsername
+            };
+            Connection = new TcpClient();
+            ReadBuffer = new List<String>();
+            State = new IRCState();
+        }
+        internal void Reset()
+        {
+            State = new IRCState();
+            Connection = new TcpClient();
+        }
+    }
+
     internal class IRCState
     {
-        public IRCState()
-        {
-
-        }
         public bool Connecting { get; internal set; }
         public bool Connected { get; internal set; }
         public bool AuthSend { get; internal set; }
-        public string Expect { get; internal set; }
-        public DateTime AuthSent { get; internal set; }
+        public DateTime LastChange { get; internal set; }
         public bool NickAuth { get; internal set; }
+        public bool Joined { get; internal set; }
     }
 
-    internal class UserProfile
+    internal class IRCProfile
     {
-        public string IRCNickname { get; internal set; }
         public string IRCUsername { get; internal set; }
-        public bool IRCIdentified { get; internal set; }
-        public bool IRCConnected { get; internal set; }
+        public string IRCNickname { get; internal set; }
+        public string IRCRealname { get; internal set; }
+    }
+
+    internal class DiscordProfile
+    {
+        public string IRCUnique { get; internal set; }
         public UInt64 DiscordUID { get; internal set; }
         public string DiscordUsername { get; internal set; }
         public string DiscordNickname { get; internal set; }
@@ -464,5 +511,6 @@ namespace DiscordBridge
     {
         public string Identifier { get; internal set; }
         public string Message { get; internal set; }
+        public string Discriminator { get; internal set; }
     }
 }
